@@ -281,13 +281,22 @@
   <div class="sb-body">
     <div id="panel-toc"><div id="toc-list"></div></div>
     <div id="panel-search" style="display:none;">
-      <div class="search-box">
-        <input id="search-input" type="text" placeholder="Search guideline text…">
-        <button id="search-go">→</button>
-      </div>
-      <div id="search-status">Type a term and press enter.</div>
-      <div id="search-results"></div>
-    </div>
+  <div style="padding: 10px 14px 2px; display: flex; gap: 14px; font-size: 11.5px; color: #8CA19D;">
+    <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+      <input type="radio" name="search-mode" value="title" checked style="accent-color: var(--teal);"> Section Titles
+    </label>
+    <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+      <input type="radio" name="search-mode" value="fulltext" style="accent-color: var(--teal);"> Full Document Text
+    </label>
+  </div>
+
+  <div class="search-box">
+    <input id="search-input" type="text" placeholder="Search guidelines…">
+    <button id="search-go">→</button>
+  </div>
+  <div id="search-status">Type a term and choose a mode.</div>
+  <div id="search-results"></div>
+</div>
   </div>
 </div>
 
@@ -713,34 +722,28 @@ function buildRail(outline) {
 }
 function openSidebarIfMobile() { if (window.innerWidth <= 760) openSidebar(); }
 
-// ---------- Full-text search ----------
+// ---------- Search Logic (Dual Mode: Title vs Full-text) ----------
 let indexBuilding = false;
 let indexBuilt = false;
 
-function loadTextCacheFromStorage() {
-  try {
-    const raw = localStorage.getItem(CACHE_KEY);
-    if (raw) {
-      const obj = JSON.parse(raw);
-      if (obj.pages === totalPages) {
-        Object.entries(obj.data).forEach(([k, v]) => textCache.set(parseInt(k, 10), v));
-        indexBuilt = textCache.size === totalPages;
-      }
+// Helper to recursively parse the document outline for Title Search
+function findMatchingTitles(items, query, matches = []) {
+  if (!items) return matches;
+  items.forEach(item => {
+    const title = item.title.trim();
+    if (title.toLowerCase().includes(query)) {
+      matches.push({ title: title, dest: item.dest, isTitleMatch: true });
     }
-  } catch (e) { /* ignore corrupt cache */ }
+    if (item.items && item.items.length > 0) {
+      findMatchingTitles(item.items, query, matches);
+    }
+  });
+  return matches;
 }
 
-function saveTextCacheToStorage() {
-  try {
-    const data = {};
-    textCache.forEach((v, k) => { data[k] = v; });
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ pages: totalPages, data }));
-  } catch (e) { /* storage full or unavailable — safe to skip */ }
-}
-
+// Background indexing worker for Full-text Search
 async function ensureIndexBuilt(onProgress) {
-  if (indexBuilt) return;
-  if (indexBuilding) return;
+  if (indexBuilt || indexBuilding) return;
   indexBuilding = true;
   const batchSize = 25;
   for (let start = 1; start <= totalPages; start += batchSize) {
@@ -749,10 +752,12 @@ async function ensureIndexBuilt(onProgress) {
       Array.from({ length: end - start + 1 }, (_, k) => start + k)
         .filter(n => !textCache.has(n))
         .map(async (n) => {
-          const page = await pdfDoc.getPage(n);
-          const content = await page.getTextContent();
-          const text = content.items.map(i => i.str).join(' ');
-          textCache.set(n, text);
+          try {
+            const page = await pdfDoc.getPage(n);
+            const content = await page.getTextContent();
+            const text = content.items.map(i => i.str).join(' ');
+            textCache.set(n, text);
+          } catch(e) { console.error(`Error indexing page ${n}`, e); }
         })
     );
     onProgress(Math.min(end, totalPages), totalPages);
@@ -763,48 +768,104 @@ async function ensureIndexBuilt(onProgress) {
   saveTextCacheToStorage();
 }
 
+// Storage caching for full-text maps
+function loadTextCacheFromStorage() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (raw) {
+      const obj = JSON.parse(raw);
+      if (obj.pages === totalPages) {
+        Object.entries(obj.data).forEach(([k, v]) => textCache.set(parseInt(k, 10), v));
+        indexBuilt = textCache.size === totalPages;
+      }
+    }
+  } catch (e) {}
+}
+function saveTextCacheToStorage() {
+  try {
+    const data = {};
+    textCache.forEach((v, k) => { data[k] = v; });
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ pages: totalPages, data }));
+  } catch (e) {}
+}
+
 el('search-go').addEventListener('click', runSearch);
 el('search-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') runSearch(); });
 
 async function runSearch() {
   const term = el('search-input').value.trim();
   if (!term) return;
+  
   const statusEl = el('search-status');
   const resultsEl = el('search-results');
   resultsEl.innerHTML = '';
 
-  if (!indexBuilt) {
-    statusEl.textContent = 'Indexing document text — first search only, takes a few seconds…';
-    await ensureIndexBuilt((done, total) => {
-      statusEl.textContent = `Indexing… ${done} / ${total} pages`;
+  const mode = document.querySelector('input[name="search-mode"]:checked').value;
+  const q = term.toLowerCase();
+
+  // --- MODE 1: SECTION TITLE ONLY SEARCH ---
+  if (mode === 'title') {
+    statusEl.textContent = 'Searching section titles...';
+    const outline = await pdfDoc.getOutline();
+    if (!outline) {
+      statusEl.textContent = 'No index outline structure found to search.';
+      return;
+    }
+    
+    const matches = findMatchingTitles(outline, q);
+    statusEl.textContent = matches.length
+      ? `${matches.length} matching section${matches.length === 1 ? '' : 's'} found`
+      : `No sections match "${term}"`;
+
+    for (const m of matches) {
+      const row = document.createElement('div');
+      row.className = 'result-item';
+      let pNum = m.dest ? await resolveDestPage(m.dest) : null;
+      
+      const re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
+      const textDisplay = escapeHtml(m.title).replace(re, '<mark>$1</mark>');
+
+      row.innerHTML = `<div class="rp">${pNum ? 'Page ' + pNum : '...'}</div><div class="rs" style="font-weight:600; color:#fff;">${textDisplay}</div>`;
+      row.addEventListener('click', () => { if (pNum) { goToPage(pNum); if (window.innerWidth <= 760) closeSidebar(); } });
+      resultsEl.appendChild(row);
+    }
+  } 
+  
+  // --- MODE 2: FULL TEXT PATTERN MATCHING ---
+  else {
+    if (!indexBuilt) {
+      statusEl.textContent = 'Indexing full text first time — please wait...';
+      await ensureIndexBuilt((done, total) => {
+        statusEl.textContent = `Indexing… ${done} / ${total} pages`;
+      });
+    }
+
+    statusEl.textContent = 'Scanning full document...';
+    const matches = [];
+    textCache.forEach((text, pageNum) => {
+      const idx = text.toLowerCase().indexOf(q);
+      if (idx !== -1) {
+        const start = Math.max(0, idx - 45);
+        const end = Math.min(text.length, idx + q.length + 60);
+        let snippet = (start > 0 ? '…' : '') + text.slice(start, end).trim() + (end < text.length ? '…' : '');
+        matches.push({ pageNum, snippet });
+      }
+    });
+    matches.sort((a, b) => a.pageNum - b.pageNum);
+
+    statusEl.textContent = matches.length
+      ? `${matches.length} page${matches.length === 1 ? '' : 's'} match "${term}"`
+      : `No body text matches found for "${term}"`;
+
+    matches.forEach(m => {
+      const row = document.createElement('div');
+      row.className = 'result-item';
+      const re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
+      row.innerHTML = `<div class="rp">Page ${m.pageNum}</div><div class="rs">${escapeHtml(m.snippet).replace(re, '<mark>$1</mark>')}</div>`;
+      row.addEventListener('click', () => { goToPage(m.pageNum); if (window.innerWidth <= 760) closeSidebar(); });
+      resultsEl.appendChild(row);
     });
   }
-
-  const q = term.toLowerCase();
-  const matches = [];
-  textCache.forEach((text, pageNum) => {
-    const idx = text.toLowerCase().indexOf(q);
-    if (idx !== -1) {
-      const start = Math.max(0, idx - 45);
-      const end = Math.min(text.length, idx + q.length + 60);
-      let snippet = (start > 0 ? '…' : '') + text.slice(start, end).trim() + (end < text.length ? '…' : '');
-      matches.push({ pageNum, snippet, idx });
-    }
-  });
-  matches.sort((a, b) => a.pageNum - b.pageNum);
-
-  statusEl.textContent = matches.length
-    ? `${matches.length} page${matches.length === 1 ? '' : 's'} match "${term}"`
-    : `No matches found for "${term}"`;
-
-  matches.forEach(m => {
-    const row = document.createElement('div');
-    row.className = 'result-item';
-    const re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
-    row.innerHTML = `<div class="rp">Page ${m.pageNum}</div><div class="rs">${escapeHtml(m.snippet).replace(re, '<mark>$1</mark>')}</div>`;
-    row.addEventListener('click', () => { goToPage(m.pageNum); if (window.innerWidth <= 760) closeSidebar(); });
-    resultsEl.appendChild(row);
-  });
 }
 
 function escapeHtml(s) {
