@@ -669,10 +669,6 @@ function buildTocNode(item, depth, path, customTitle = null, isTargetCategory = 
   caret.textContent = hasChildren ? '▸ ' : ''; 
   row.appendChild(caret);
 
-  // --- CHOOSE TITLE SOURCE ---
-  // 1. Check custom override title passed directly
-  // 2. Check programmatically injected dictionary override
-  // 3. Fallback to standard PDF title string safely
   let displayTitle = customTitle || item.overrideDisplayTitle || item.title.trim();
 
   const ttl = document.createElement('span');
@@ -691,6 +687,16 @@ function buildTocNode(item, depth, path, customTitle = null, isTargetCategory = 
         const nowOpen = kids.classList.toggle('open');
         caret.classList.toggle('open', nowOpen);
         kids.style.display = nowOpen ? 'block' : 'none';
+
+        // --- LAZY-LOAD: Resolve child page numbers ONLY when folder expands ---
+        if (nowOpen) {
+          const subItems = kids.querySelectorAll('.toc-item');
+          subItems.forEach(childWrap => {
+            if (childWrap._lazyResolvePage) {
+              childWrap._lazyResolvePage();
+            }
+          });
+        }
       }
       if (!item.dest) return;
     }
@@ -717,8 +723,21 @@ function buildTocNode(item, depth, path, customTitle = null, isTargetCategory = 
     wrap.appendChild(kids);
   }
 
+  // --- PERFORMANCE ENGINE: DEFER SUB-ITEM WORK ---
   if (item.dest) {
-    resolveDestPage(item.dest).then(p => { if (p) pg.textContent = p; });
+    const runResolution = () => {
+      if (wrap._pageHasResolved) return;
+      wrap._pageHasResolved = true;
+      resolveDestPage(item.dest).then(p => { if (p) pg.textContent = p; });
+    };
+
+    if (depth === 0) {
+      // Top-level headers load immediately (negligible performance impact)
+      runResolution();
+    } else {
+      // Attach the resolution function to the HTML element to be executed later on-click
+      wrap._lazyResolvePage = runResolution;
+    }
   }
 
   return wrap;
