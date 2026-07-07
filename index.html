@@ -568,29 +568,61 @@ async function buildOutline() {
     return;
   }
 
+  // --- MANUAL DICTIONARY FOR RE-TITLING ---
+  // Key: The exact lowercased string extracted from your PDF
+  // Value: The clean visual name you want displayed in the sidebar dropdown
+  const manualSectionTitles = {
+    // Triage Group Overrides
+    "triage principles (updated in june 2024)": "Triage Principles",
+    "pain assessment & management in kk children's emergency (updated in june 2022)": "Pain Assessment",
+    "patient acuity category scale (updated in june 2022)": "Patient Acuity Category Scale",
+    "recognition of a sick child (updated in june 2022)": "Recognition of a Sick Child",
+
+    // Resuscitation Group Overrides
+    "code blue": "Code Blue",
+    "paediatric advance life support (updated in april 2024)": "Paediatric Advanced Life Support (PALS)",
+    "guidelines for rapid sequence intubation": "Rapid Sequence Intubation",
+    "multiple trauma protocol (updated in dec 2021)": "Multiple Trauma Protocol",
+    "workflow for urgent ct scans from ce after office hours": "Urgent CT Scan Workflow",
+    "paediatric sepsis bundle for severe sepsis with shock": "Paediatric Sepsis Bundle",
+    "paediatric heat stroke protocol": "Heat Stroke Protocol"
+  };
+
   const structuredCategories = [];
   let currentCategory = null;
 
-  // --- PASS 1: GROUP FLAT SIBLINGS INTO NESTED BUCKETS ---
+  // Pass 1: Parse structure and map to your clean buckets
   outline.forEach((item) => {
     const title = item.title.trim();
+    const titleLower = title.toLowerCase();
+    
+    // Explicit manual grouping matching your target blueprint
     const categoryMatch = title.match(/^([A-Z])\s+(.+)$/);
 
     if (categoryMatch) {
-      // It's a main heading (e.g., "A Triage"). Create a clean category bucket.
-      const cleanTitle = categoryMatch[2].trim();
+      let cleanCatTitle = categoryMatch[2].trim();
+      
+      // Manual overrides for the primary headers
+      if (cleanCatTitle.toLowerCase() === 'triage') cleanCatTitle = 'Triage';
+      if (cleanCatTitle.toLowerCase() === 'resuscitation') cleanCatTitle = 'Resuscitation';
+      if (cleanCatTitle.toLowerCase().includes('febrile')) cleanCatTitle = 'Febrile Conditions';
+
       currentCategory = {
-        title: cleanTitle,
+        title: cleanCatTitle,
         dest: item.dest,
         items: []
       };
       structuredCategories.push(currentCategory);
     } else {
-      // It's a sub-item guideline content node. Attach it to the current open category.
       if (currentCategory) {
+        // Look for an override in our manual list; if not found, use a fallback copy
+        const matchedTitle = manualSectionTitles[titleLower];
+        if (matchedTitle) {
+          item.overrideDisplayTitle = matchedTitle;
+        }
         currentCategory.items.push(item);
       } else {
-        // Fallback for standalone leading items (e.g., Cover pages)
+        // Fallback catchall for random ungrouped attachments
         structuredCategories.push({
           title: title,
           dest: item.dest,
@@ -600,15 +632,13 @@ async function buildOutline() {
     }
   });
 
-  // --- PASS 2: RENDER ONLY THE NESTED TREE HIERARCHY ---
+  // Pass 2: Print the sidebar markup configuration
   structuredCategories.forEach((cat, index) => {
     const hasChildren = cat.items && cat.items.length > 0;
-    // Force top-level chapters to be structured category groups
     const parentNode = buildTocNode(cat, 0, `cat-${index}`, cat.title, hasChildren);
     list.appendChild(parentNode);
   });
 
-  // Update side rail tabs matching our cleaned hierarchy map
   buildRail(outline);
 }
 
@@ -631,14 +661,11 @@ function buildTocNode(item, depth, path, customTitle = null, isTargetCategory = 
   caret.textContent = hasChildren ? '▸ ' : ''; 
   row.appendChild(caret);
 
-  // --- SUBSECTION TEXT FORMATTING ENGINE ---
-  let displayTitle = customTitle || item.title.trim();
-  if (depth > 0) {
-    // Strip historical edit metadata tags: e.g., "(Updated in June 2024)"
-    displayTitle = displayTitle.replace(/\s*\(Updated\s+in\s+[^)]+\)/i, '');
-    displayTitle = displayTitle.replace(/\s*\(Updated\s+[^)]+\)/i, '');
-    displayTitle = displayTitle.trim();
-  }
+  // --- CHOOSE TITLE SOURCE ---
+  // 1. Check custom override title passed directly
+  // 2. Check programmatically injected dictionary override
+  // 3. Fallback to standard PDF title string safely
+  let displayTitle = customTitle || item.overrideDisplayTitle || item.title.trim();
 
   const ttl = document.createElement('span');
   ttl.className = 'ttl';
@@ -649,7 +676,6 @@ function buildTocNode(item, depth, path, customTitle = null, isTargetCategory = 
   pg.className = 'pg';
   row.appendChild(pg);
 
-  // Click behavior matching your accordion spec
   row.addEventListener('click', async (e) => {
     if (hasChildren) {
       const kids = wrap.querySelector(':scope > .toc-children');
@@ -672,11 +698,10 @@ function buildTocNode(item, depth, path, customTitle = null, isTargetCategory = 
 
   wrap.appendChild(row);
 
-  // Safely embed all validated children sub-items directly inside this container element
   if (hasChildren) {
     const kids = document.createElement('div');
     kids.className = 'toc-children';
-    kids.style.display = 'none'; // Accordion panels remain collapsed by default
+    kids.style.display = 'none';
     
     item.items.forEach((child, i) => {
       kids.appendChild(buildTocNode(child, depth + 1, path + '-' + i));
