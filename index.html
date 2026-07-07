@@ -396,7 +396,7 @@ document.addEventListener('keydown', (e) => {
 
 // ---------- Sidebar toggle ----------
 function openSidebar(){ el('sidebar').classList.add('open'); el('sidebar').classList.remove('collapsed'); el('scrim').classList.add('show'); }
-function closeSidebar(){ el('sidebar').classList.remove('open'); el('scrim').classList.add(''); el('scrim').classList.remove('show'); }
+function closeSidebar(){ el('sidebar').classList.remove('open'); el('scrim').classList.remove('show'); }
 el('btn-menu').addEventListener('click', () => {
   if (window.innerWidth <= 760) {
     el('sidebar').classList.contains('open') ? closeSidebar() : openSidebar();
