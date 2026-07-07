@@ -568,53 +568,47 @@ async function buildOutline() {
     return;
   }
 
+  const structuredCategories = [];
   let currentCategory = null;
-  let categoryIndex = 0;
 
+  // --- PASS 1: GROUP FLAT SIBLINGS INTO NESTED BUCKETS ---
   outline.forEach((item) => {
     const title = item.title.trim();
-    
-    // Check if the item is a main category marker (e.g., "A Triage", "B Resuscitation", "C Febrile Conditions")
-    const match = title.match(/^([A-Z])\s+(.+)$/);
-    
-    if (match) {
-      // Create a clean title (e.g., "Triage", "Resuscitation", "Febrile Conditions")
-      const cleanCatTitle = match[2].trim();
-      
+    const categoryMatch = title.match(/^([A-Z])\s+(.+)$/);
+
+    if (categoryMatch) {
+      // It's a main heading (e.g., "A Triage"). Create a clean category bucket.
+      const cleanTitle = categoryMatch[2].trim();
       currentCategory = {
-        title: cleanCatTitle,
+        title: cleanTitle,
         dest: item.dest,
         items: []
       };
-      
-      // Render the category block immediately to keep the document order intact
-      const parentNode = buildTocNode(currentCategory, 0, `cat-${categoryIndex}`, cleanCatTitle, true);
-      list.appendChild(parentNode);
-      categoryIndex++;
-    } else if (currentCategory) {
-      // If it's a sub-item, push it into the active category dropdown container
-      currentCategory.items.push(item);
-      
-      // Re-render the children inside the parent category container dynamically
-      const parentNode = list.querySelector(`.toc-item[data-path="cat-${categoryIndex - 1}"]`);
-      if (parentNode) {
-        let kidsContainer = parentNode.querySelector('.toc-children');
-        if (!kidsContainer) {
-          kidsContainer = document.createElement('div');
-          kidsContainer.className = 'toc-children';
-          kidsContainer.style.display = 'none'; // Keep closed by default
-          parentNode.appendChild(kidsContainer);
-        }
-        // Append this single child cleanly
-        kidsContainer.appendChild(buildTocNode(item, 1, `cat-${categoryIndex - 1}-${currentCategory.items.length - 1}`));
-      }
+      structuredCategories.push(currentCategory);
     } else {
-      // Fallback for any standalone items found before the first category header
-      list.appendChild(buildTocNode(item, 0, `flat-${categoryIndex}`));
+      // It's a sub-item guideline content node. Attach it to the current open category.
+      if (currentCategory) {
+        currentCategory.items.push(item);
+      } else {
+        // Fallback for standalone leading items (e.g., Cover pages)
+        structuredCategories.push({
+          title: title,
+          dest: item.dest,
+          items: []
+        });
+      }
     }
   });
 
-  // Rebuild side rail tabs using our clean categories
+  // --- PASS 2: RENDER ONLY THE NESTED TREE HIERARCHY ---
+  structuredCategories.forEach((cat, index) => {
+    const hasChildren = cat.items && cat.items.length > 0;
+    // Force top-level chapters to be structured category groups
+    const parentNode = buildTocNode(cat, 0, `cat-${index}`, cat.title, hasChildren);
+    list.appendChild(parentNode);
+  });
+
+  // Update side rail tabs matching our cleaned hierarchy map
   buildRail(outline);
 }
 
@@ -637,10 +631,10 @@ function buildTocNode(item, depth, path, customTitle = null, isTargetCategory = 
   caret.textContent = hasChildren ? '▸ ' : ''; 
   row.appendChild(caret);
 
-  // --- CLEAN SUBSECTION TITLES ---
+  // --- SUBSECTION TEXT FORMATTING ENGINE ---
   let displayTitle = customTitle || item.title.trim();
   if (depth > 0) {
-    // Strips out "(Updated in ...)" or "(Updated ...)" along with trailing spaces cleanly
+    // Strip historical edit metadata tags: e.g., "(Updated in June 2024)"
     displayTitle = displayTitle.replace(/\s*\(Updated\s+in\s+[^)]+\)/i, '');
     displayTitle = displayTitle.replace(/\s*\(Updated\s+[^)]+\)/i, '');
     displayTitle = displayTitle.trim();
@@ -655,8 +649,8 @@ function buildTocNode(item, depth, path, customTitle = null, isTargetCategory = 
   pg.className = 'pg';
   row.appendChild(pg);
 
+  // Click behavior matching your accordion spec
   row.addEventListener('click', async (e) => {
-    // If it has kids, clicking the row toggles the slide container
     if (hasChildren) {
       const kids = wrap.querySelector(':scope > .toc-children');
       if (kids) {
@@ -678,11 +672,12 @@ function buildTocNode(item, depth, path, customTitle = null, isTargetCategory = 
 
   wrap.appendChild(row);
 
-  // Fallback generation for hardcoded programmatic arrays
-  if (hasChildren && !wrap.querySelector('.toc-children')) {
+  // Safely embed all validated children sub-items directly inside this container element
+  if (hasChildren) {
     const kids = document.createElement('div');
     kids.className = 'toc-children';
-    kids.style.display = 'none';
+    kids.style.display = 'none'; // Accordion panels remain collapsed by default
+    
     item.items.forEach((child, i) => {
       kids.appendChild(buildTocNode(child, depth + 1, path + '-' + i));
     });
