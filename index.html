@@ -411,6 +411,7 @@ function relayoutSlots() {
 }
 
 // ---------- Rendering individual pages ----------
+// ---------- Rendering individual pages ----------
 async function ensureRendered(pageNum) {
   if (renderedPages.has(pageNum)) return;
   const slot = slots[pageNum - 1];
@@ -420,10 +421,25 @@ async function ensureRendered(pageNum) {
     const page = await pdfDoc.getPage(pageNum);
     const viewport = page.getViewport({ scale });
     const canvas = document.createElement('canvas');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
+    
+    // --- START OF RETINA / HIGH-DPI SCALING FIX ---
+    const dpr = window.devicePixelRatio || 1;
+    
+    // Set the internal drawing buffer to match device resolution
+    canvas.width = viewport.width * dpr;
+    canvas.height = viewport.height * dpr;
+    
+    // Use CSS styles to force the canvas layout back down to its standard size
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    
     slot.appendChild(canvas);
     const ctx = canvas.getContext('2d');
+    
+    // Scale the drawing context so text and layout coordinates render sharply
+    ctx.scale(dpr, dpr);
+    // --- END OF RETINA / HIGH-DPI SCALING FIX ---
+
     await page.render({ canvasContext: ctx, viewport }).promise;
   } catch (e) {
     renderedPages.delete(pageNum);
@@ -536,24 +552,61 @@ function switchTab(which) {
 // ---------- Outline (table of contents) + binder tab rail ----------
 async function buildOutline() {
   const outline = await pdfDoc.getOutline();
-  if (!outline || !outline.length) {
-    el('toc-list').innerHTML = '<div style="padding:14px;color:#9FB2AE;font-size:12.5px;">No table of contents found in this document.</div>';
-    return;
-  }
   const list = el('toc-list');
   list.innerHTML = '';
-  outline.forEach((item, i) => list.appendChild(buildTocNode(item, 0, `${i}`)));
+  
+  if (!outline || !outline.length) {
+    list.innerHTML = '<div style="padding:14px;color:#9FB2AE;font-size:12.5px;">No table of contents found in this document.</div>';
+    return;
+  }
+
+  // Define the explicit display names we want to clean up or enforce
+  const cleanCategoryNames = {
+    'a triage': 'Triage',
+    'b resuscitation': 'Resuscitation',
+    'c febrile conditions': 'Febrile Conditions'
+  };
+
+  outline.forEach((item, i) => {
+    const rawTitle = item.title.trim();
+    const lookupKey = rawTitle.toLowerCase();
+    
+    // Check if this item is one of our target main categories
+    let isTargetCategory = false;
+    let visualTitle = rawTitle;
+
+    // Clean up title strings matching our mapping or general patterns (e.g., "A Triage" -> "Triage")
+    if (cleanCategoryNames[lookupKey]) {
+      visualTitle = cleanCategoryNames[lookupKey];
+      isTargetCategory = true;
+    } else if (/^[A-Z]\s+/i.test(rawTitle)) {
+      // Catch-all fallback for other sections structured like "D Respiratory"
+      visualTitle = rawTitle.replace(/^[A-Z]\s+/, '');
+    }
+
+    // Pass an extra flag if it is a primary top-level category container
+    const node = buildTocNode(item, 0, `${i}`, visualTitle, isTargetCategory);
+    list.appendChild(node);
+  });
+
+  // Rebuild the side rail indicators if you still want quick anchors, 
+  // or leave buildRail empty if you prefer navigation entirely inside the sidebar list.
   buildRail(outline);
 }
 
-function buildTocNode(item, depth, path) {
+function buildTocNode(item, depth, path, customTitle = null, isTargetCategory = false) {
   const wrap = document.createElement('div');
   wrap.className = `toc-item depth-${depth}`;
   wrap.dataset.path = path;
 
+  // If it's a top-level targeted category, add a class for custom styling
+  if (depth === 0 && isTargetCategory) {
+    wrap.classList.add('category-group');
+  }
+
   const row = document.createElement('div');
   row.className = 'toc-row';
-  row.style.paddingLeft = (8 + depth * 2) + 'px';
+  row.style.paddingLeft = (8 + depth * 12) + 'px'; // Increased multiplier for clearer nested indentation
 
   const hasChildren = item.items && item.items.length > 0;
   const caret = document.createElement('span');
@@ -563,23 +616,33 @@ function buildTocNode(item, depth, path) {
 
   const ttl = document.createElement('span');
   ttl.className = 'ttl';
-  ttl.textContent = item.title.trim();
+  ttl.textContent = customTitle || item.title.trim();
   row.appendChild(ttl);
 
   const pg = document.createElement('span');
   pg.className = 'pg';
   row.appendChild(pg);
 
+  // Click interaction logic
   row.addEventListener('click', async (e) => {
-    if (hasChildren && (e.target === caret || depth > 0)) {
+    // Behavior: If it has subsections, any click on the header expands/collapses it
+    if (hasChildren) {
       const kids = wrap.querySelector(':scope > .toc-children');
-      const nowOpen = kids.classList.toggle('open');
-      caret.classList.toggle('open', nowOpen);
-      if (e.target === caret) return;
+      if (kids) {
+        const nowOpen = kids.classList.toggle('open');
+        caret.classList.toggle('open', nowOpen);
+      }
+      // If it's a structural header without a valid document page destination, stop execution here
+      if (!item.dest) return;
     }
+    
+    // Fallback: If it's a leaf item (or has a page link), navigate directly to that page
     if (item.dest) {
       const pageNum = await resolveDestPage(item.dest);
-      if (pageNum) { goToPage(pageNum); if (window.innerWidth <= 760) closeSidebar(); }
+      if (pageNum) {
+        goToPage(pageNum);
+        if (window.innerWidth <= 760) closeSidebar();
+      }
     }
   });
 
@@ -588,7 +651,10 @@ function buildTocNode(item, depth, path) {
   if (hasChildren) {
     const kids = document.createElement('div');
     kids.className = 'toc-children';
-    item.items.forEach((child, i) => kids.appendChild(buildTocNode(child, depth + 1, path + '-' + i)));
+    // Recursively build out the dropdown contents (sub-sections like Triage Principles, Pain Assessment)
+    item.items.forEach((child, i) => {
+      kids.appendChild(buildTocNode(child, depth + 1, path + '-' + i));
+    });
     wrap.appendChild(kids);
   }
 
