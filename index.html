@@ -568,78 +568,82 @@ async function buildOutline() {
     return;
   }
 
-  // --- MANUAL DICTIONARY FOR RE-TITLING ---
-  // Key: The exact lowercased string extracted from your PDF
-  // Value: The clean visual name you want displayed in the sidebar dropdown
-  const manualSectionTitles = {
-    // Cover
-    "Cover (Jan 2025- Edition)": "Cover",
-    
-    // Triage Group Overrides
-    "A1. Clinical Guidelines_Triage & Resuscitation revised 22.6.22 (p1-22) (updated by Dr Tham 13.6.24 ) (final)": "Triage",
-    "triage principles (updated in june 2024)": "Triage Principles",
-    "pain assessment & management in kk children's emergency (updated in june 2022)": "Pain Assessment",
-    "patient acuity category scale (updated in june 2022)": "Patient Acuity Category Scale",
-    "recognition of a sick child (updated in june 2022)": "Recognition of a Sick Child",
+  // --- STRICT MANUAL BLUEPRINT ROUTER ---
+  // Connects messy raw PDF outline keys to your precise layout destinations and clean titles
+  const manualRouter = {
+    "triage principles (updated in june 2024)": { cat: "A) Triage", clean: "Triage Principles" },
+    "pain assessment & management in kk children's emergency (updated in june 2022)": { cat: "A) Triage", clean: "Pain Assessment and Management in KK Children's Emergency" },
+    "patient acuity category scale (updated in june 2022)": { cat: "A) Triage", clean: "Patient Acuity Category Scale" },
+    "recognition of a sick child (updated in june 2022)": { cat: "A) Triage", clean: "Recognition of a Sick Child" },
 
-    // Resuscitation Group Overrides
-    "code blue": "Code Blue",
-    "paediatric advance life support (updated in april 2024)": "Paediatric Advanced Life Support (PALS)",
-    "guidelines for rapid sequence intubation": "Rapid Sequence Intubation",
-    "multiple trauma protocol (updated in dec 2021)": "Multiple Trauma Protocol",
-    "workflow for urgent ct scans from ce after office hours": "Urgent CT Scan Workflow",
-    "paediatric sepsis bundle for severe sepsis with shock": "Paediatric Sepsis Bundle",
-    "paediatric heat stroke protocol": "Heat Stroke Protocol"
+    "code blue": { cat: "B) Resuscitation", clean: "Code Blue" },
+    "paediatric advance life support (updated in april 2024)": { cat: "B) Resuscitation", clean: "Paediatric Advance Life Support" },
+    "guidelines for rapid sequence intubation": { cat: "B) Resuscitation", clean: "Guidelines for Rapid Sequence Intubation" },
+    "multiple trauma protocol (updated in dec 2021)": { cat: "B) Resuscitation", clean: "Multiple Trauma Protocol" },
+    "workflow for urgent ct scans from ce after office hours": { cat: "B) Resuscitation", clean: "Workflow for Urgent CT Scans from CE after Office Hours" },
+    "paediatric sepsis bundle for severe sepsis with shock": { cat: "B) Resuscitation", clean: "Paediatric Sepsis Bundle for Severe Sepsis with Shock" },
+    "paediatric heat stroke protocol": { cat: "B) Resuscitation", clean: "Paediatric Heat Stroke Protocol" }
   };
 
+  const categoriesMap = new Map();
   const structuredCategories = [];
-  let currentCategory = null;
 
-  // Pass 1: Parse structure and map to your clean buckets
+  // Helper to safely instantiate category groups sequentially
+  function getOrCreateCategory(catTitle) {
+    if (!categoriesMap.has(catTitle)) {
+      const catObj = { title: catTitle, dest: null, items: [] };
+      categoriesMap.set(catTitle, catObj);
+      structuredCategories.push(catObj);
+    }
+    return categoriesMap.get(catTitle);
+  }
+
+  // Fallback category tracker for chapters beyond A and B (etcetera)
+  let activeAutoCategory = "Other Guidelines";
+
   outline.forEach((item) => {
     const title = item.title.trim();
     const titleLower = title.toLowerCase();
-    
-    // Explicit manual grouping matching your target blueprint
-    const categoryMatch = title.match(/^([A-Z])\s+(.+)$/);
 
-    if (categoryMatch) {
-      let cleanCatTitle = categoryMatch[2].trim();
-      
-      // Manual overrides for the primary headers
-      if (cleanCatTitle.toLowerCase() === 'triage') cleanCatTitle = 'Triage';
-      if (cleanCatTitle.toLowerCase() === 'resuscitation') cleanCatTitle = 'Resuscitation';
-      if (cleanCatTitle.toLowerCase().includes('febrile')) cleanCatTitle = 'Febrile Conditions';
+    // 1. Filter out old messy master rows to prevent layout duplication
+    if (titleLower.includes("triage & resuscitation") || titleLower.match(/^b\d+(\.\d+)?\s+resuscitation/i)) {
+      return; 
+    }
 
-      currentCategory = {
-        title: cleanCatTitle,
-        dest: item.dest,
-        items: []
-      };
-      structuredCategories.push(currentCategory);
+    // 2. Catch native chapter header rules for subsequent letters (C, D, E...)
+    // Transforms "C Febrile Conditions" into "C) Febrile Conditions" dynamically
+    const chapterMatch = title.match(/^([A-Z])[\s\)]+(.+)$/);
+    if (chapterMatch && !manualRouter[titleLower]) {
+      const letter = chapterMatch[1];
+      const cleanCatName = chapterMatch[2].replace(/\s*\(Updated.*\)/i, '').trim();
+      activeAutoCategory = `${letter}) ${cleanCatName}`;
+      getOrCreateCategory(activeAutoCategory);
+      return;
+    }
+
+    // 3. Route item into its corresponding container block
+    if (manualRouter[titleLower]) {
+      const route = manualRouter[titleLower];
+      const targetCat = getOrCreateCategory(route.cat);
+      item.overrideDisplayTitle = route.clean;
+      targetCat.items.push(item);
     } else {
-      if (currentCategory) {
-        // Look for an override in our manual list; if not found, use a fallback copy
-        const matchedTitle = manualSectionTitles[titleLower];
-        if (matchedTitle) {
-          item.overrideDisplayTitle = matchedTitle;
-        }
-        currentCategory.items.push(item);
-      } else {
-        // Fallback catchall for random ungrouped attachments
-        structuredCategories.push({
-          title: title,
-          dest: item.dest,
-          items: []
-        });
-      }
+      // Automatic fallback processing for chapters further down the guidelines document
+      if (titleLower.includes("cover")) return; // Skip cover logs
+      
+      const targetCat = getOrCreateCategory(activeAutoCategory);
+      item.overrideDisplayTitle = title
+        .replace(/\s*\(Updated\s+in\s+[^)]+\)/i, '')
+        .replace(/\s*\(Updated\s+[^)]+\)/i, '')
+        .trim();
+      targetCat.items.push(item);
     }
   });
 
-  // Pass 2: Print the sidebar markup configuration
+  // Render the finalized unified clean hierarchy tree down to the sidebar list
   structuredCategories.forEach((cat, index) => {
-    const hasChildren = cat.items && cat.items.length > 0;
-    const parentNode = buildTocNode(cat, 0, `cat-${index}`, cat.title, hasChildren);
+    if (cat.items.length === 0) return;
+    const parentNode = buildTocNode(cat, 0, `cat-${index}`, cat.title, true);
     list.appendChild(parentNode);
   });
 
@@ -863,17 +867,22 @@ async function runSearch() {
       ? `${matches.length} matching section${matches.length === 1 ? '' : 's'} found`
       : `No sections match "${term}"`;
 
-    for (const m of matches) {
-      const row = document.createElement('div');
-      row.className = 'result-item';
-      let pNum = m.dest ? await resolveDestPage(m.dest) : null;
-      
-      const re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
-      const textDisplay = escapeHtml(m.title).replace(re, '<mark>$1</mark>');
+    // Locate this section inside your runSearch() function under 'MODE 1'
+for (const m of matches) {
+  const row = document.createElement('div');
+  row.className = 'result-item';
+  let pNum = m.dest ? await resolveDestPage(m.dest) : null;
+  
+  // Prioritize the clean display override name during search indexing matches
+  const displayTitleString = m.overrideDisplayTitle || m.title.trim();
+  
+  const re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
+  const textDisplay = escapeHtml(displayTitleString).replace(re, '<mark>$1</mark>');
 
-      row.innerHTML = `<div class="rp">${pNum ? 'Page ' + pNum : '...'}</div><div class="rs" style="font-weight:600; color:#fff;">${textDisplay}</div>`;
-      row.addEventListener('click', () => { if (pNum) { goToPage(pNum); if (window.innerWidth <= 760) closeSidebar(); } });
-      resultsEl.appendChild(row);
+  row.innerHTML = `<div class="rp">${pNum ? 'Page ' + pNum : '...'}</div><div class="rs" style="font-weight:600; color:#fff;">${textDisplay}</div>`;
+  row.addEventListener('click', () => { if (pNum) { goToPage(pNum); if (window.innerWidth <= 760) closeSidebar(); } });
+  resultsEl.appendChild(row);
+}
     }
   } 
   
