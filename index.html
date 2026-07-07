@@ -420,7 +420,6 @@ function relayoutSlots() {
 }
 
 // ---------- Rendering individual pages ----------
-// ---------- Rendering individual pages ----------
 async function ensureRendered(pageNum) {
   if (renderedPages.has(pageNum)) return;
   const slot = slots[pageNum - 1];
@@ -569,39 +568,54 @@ async function buildOutline() {
     return;
   }
 
-  // 1. Define our clean structural containers
-  const categories = {
-    triage: { title: 'Triage', items: [] },
-    resuscitation: { title: 'Resuscitation', items: [] },
-    febrile: { title: 'Febrile Conditions', items: [] },
-    others: { title: 'Other Guidelines', items: [] }
-  };
+  let currentCategory = null;
+  let categoryIndex = 0;
 
-  // 2. Sort the raw PDF entries into the correct container buckets
   outline.forEach((item) => {
-    const titleLower = item.title.toLowerCase();
+    const title = item.title.trim();
     
-    if (titleLower.includes('triage')) {
-      categories.triage.items.push(item);
-    } else if (titleLower.includes('resuscitation') || titleLower.includes('reuscitation')) {
-      categories.resuscitation.items.push(item);
-    } else if (titleLower.includes('febrile') || titleLower.includes('fever')) {
-      categories.febrile.items.push(item);
-    } else if (!titleLower.includes('cover')) {
-      // Keep any other valid sections grouped together cleanly
-      categories.others.items.push(item);
+    // Check if the item is a main category marker (e.g., "A Triage", "B Resuscitation", "C Febrile Conditions")
+    const match = title.match(/^([A-Z])\s+(.+)$/);
+    
+    if (match) {
+      // Create a clean title (e.g., "Triage", "Resuscitation", "Febrile Conditions")
+      const cleanCatTitle = match[2].trim();
+      
+      currentCategory = {
+        title: cleanCatTitle,
+        dest: item.dest,
+        items: []
+      };
+      
+      // Render the category block immediately to keep the document order intact
+      const parentNode = buildTocNode(currentCategory, 0, `cat-${categoryIndex}`, cleanCatTitle, true);
+      list.appendChild(parentNode);
+      categoryIndex++;
+    } else if (currentCategory) {
+      // If it's a sub-item, push it into the active category dropdown container
+      currentCategory.items.push(item);
+      
+      // Re-render the children inside the parent category container dynamically
+      const parentNode = list.querySelector(`.toc-item[data-path="cat-${categoryIndex - 1}"]`);
+      if (parentNode) {
+        let kidsContainer = parentNode.querySelector('.toc-children');
+        if (!kidsContainer) {
+          kidsContainer = document.createElement('div');
+          kidsContainer.className = 'toc-children';
+          kidsContainer.style.display = 'none'; // Keep closed by default
+          parentNode.appendChild(kidsContainer);
+        }
+        // Append this single child cleanly
+        kidsContainer.appendChild(buildTocNode(item, 1, `cat-${categoryIndex - 1}-${currentCategory.items.length - 1}`));
+      }
+    } else {
+      // Fallback for any standalone items found before the first category header
+      list.appendChild(buildTocNode(item, 0, `flat-${categoryIndex}`));
     }
   });
 
-  // 3. Render our clean categories as collapsible dropdown elements
-  Object.keys(categories).forEach((key, index) => {
-    const cat = categories[key];
-    if (cat.items.length === 0) return; // Skip a category if it has no items
-
-    // Build the master parent row node
-    const parentNode = buildTocNode({ title: cat.title, items: cat.items }, 0, `cat-${index}`, cat.title, true);
-    list.appendChild(parentNode);
-  });
+  // Rebuild side rail tabs using our clean categories
+  buildRail(outline);
 }
 
 function buildTocNode(item, depth, path, customTitle = null, isTargetCategory = false) {
@@ -615,58 +629,39 @@ function buildTocNode(item, depth, path, customTitle = null, isTargetCategory = 
 
   const row = document.createElement('div');
   row.className = 'toc-row';
-  row.style.paddingLeft = (10 + depth * 14) + 'px';
+  row.style.paddingLeft = (10 + depth * 12) + 'px';
 
   const hasChildren = item.items && item.items.length > 0;
   const caret = document.createElement('span');
   caret.className = 'caret';
-  // Use a neat arrow indicator for expandable parents
   caret.textContent = hasChildren ? '▸ ' : ''; 
   row.appendChild(caret);
 
-  // --- TEXT CLEANING ENGINE ---
-  let rawTitle = customTitle || item.title.trim();
-  
+  // --- CLEAN SUBSECTION TITLES ---
+  let displayTitle = customTitle || item.title.trim();
   if (depth > 0) {
-    // 1. Strip standard document prefixes like "A1. ", "B1.2 ", "B1.3a. " etc.
-    rawTitle = rawTitle.replace(/^[A-Z]\d+(\.\d*[a-z]?)?[\s\.\-_]*/i, '');
-    
-    // 2. Strip explicit repetitive keywords if they're already inside that dropdown folder
-    rawTitle = rawTitle.replace(/^clinical guidelines[\s\-_]*/i, '');
-    rawTitle = rawTitle.replace(/^resuscitation[\s\-_]*/i, '');
-    
-    // 3. Remove trailing page numbers, dates, version descriptors inside parentheses/brackets
-    rawTitle = rawTitle.replace(/\s*[\(\[][^\]\)]*[\)\]]\s*/g, ' ');
-    rawTitle = rawTitle.replace(/\s*revised.*$/i, '');
-    rawTitle = rawTitle.replace(/\s*updated.*$/i, '');
-    rawTitle = rawTitle.replace(/[\s\-_:\.]+(final|new)$/i, '');
-    
-    // 4. Clean up any left-over hanging double spaces or punctuation symbols
-    rawTitle = rawTitle.replace(/^[\s\-_:\.]+/, '').trim();
-    
-    // Capitalize beautifully (e.g., "CODE BLUE" -> "Code Blue")
-    if (rawTitle === rawTitle.toUpperCase()) {
-      rawTitle = rawTitle.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
-    }
+    // Strips out "(Updated in ...)" or "(Updated ...)" along with trailing spaces cleanly
+    displayTitle = displayTitle.replace(/\s*\(Updated\s+in\s+[^)]+\)/i, '');
+    displayTitle = displayTitle.replace(/\s*\(Updated\s+[^)]+\)/i, '');
+    displayTitle = displayTitle.trim();
   }
 
   const ttl = document.createElement('span');
   ttl.className = 'ttl';
-  ttl.textContent = rawTitle;
+  ttl.textContent = displayTitle;
   row.appendChild(ttl);
 
   const pg = document.createElement('span');
   pg.className = 'pg';
   row.appendChild(pg);
 
-  // Click toggle/navigation action
   row.addEventListener('click', async (e) => {
+    // If it has kids, clicking the row toggles the slide container
     if (hasChildren) {
       const kids = wrap.querySelector(':scope > .toc-children');
       if (kids) {
         const nowOpen = kids.classList.toggle('open');
         caret.classList.toggle('open', nowOpen);
-        // Toggle slide visual display
         kids.style.display = nowOpen ? 'block' : 'none';
       }
       if (!item.dest) return;
@@ -683,11 +678,11 @@ function buildTocNode(item, depth, path, customTitle = null, isTargetCategory = 
 
   wrap.appendChild(row);
 
-  if (hasChildren) {
+  // Fallback generation for hardcoded programmatic arrays
+  if (hasChildren && !wrap.querySelector('.toc-children')) {
     const kids = document.createElement('div');
     kids.className = 'toc-children';
-    kids.style.display = 'none'; // Keep dropdowns closed by default
-    
+    kids.style.display = 'none';
     item.items.forEach((child, i) => {
       kids.appendChild(buildTocNode(child, depth + 1, path + '-' + i));
     });
