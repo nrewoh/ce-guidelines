@@ -557,7 +557,9 @@ function switchTab(which) {
   el('panel-search').style.display = isToc ? 'none' : 'block';
 }
 
-// ---------- Outline (table of contents) + binder tab rail ----------
+// ==========================================================================
+// 1. HIGH-PERFORMANCE ZERO-LOAD OUTLINE GENERATOR
+// ==========================================================================
 async function buildOutline() {
   const outline = await pdfDoc.getOutline();
   const list = el('toc-list');
@@ -568,8 +570,19 @@ async function buildOutline() {
     return;
   }
 
-  // --- STRICT MANUAL BLUEPRINT ROUTER ---
-  // Connects messy raw PDF outline keys to your precise layout destinations and clean titles
+  // Deeply flatten any tree structures into a uniform data array instantly.
+  // This guarantees we catch items regardless of how the underlying PDF structures its nested bookmarks.
+  const flatOutline = [];
+  function flatten(items) {
+    if (!items) return;
+    items.forEach(item => {
+      flatOutline.push(item);
+      if (item.items && item.items.length > 0) flatten(item.items);
+    });
+  }
+  flatten(outline);
+
+  // Strict structural layout rules
   const manualRouter = {
     "triage principles (updated in june 2024)": { cat: "A) Triage", clean: "Triage Principles" },
     "pain assessment & management in kk children's emergency (updated in june 2022)": { cat: "A) Triage", clean: "Pain Assessment and Management in KK Children's Emergency" },
@@ -588,30 +601,31 @@ async function buildOutline() {
   const categoriesMap = new Map();
   const structuredCategories = [];
 
-  // Helper to safely instantiate category groups sequentially
   function getOrCreateCategory(catTitle) {
     if (!categoriesMap.has(catTitle)) {
-      const catObj = { title: catTitle, dest: null, items: [] };
+      const catObj = { title: catTitle, items: [] };
       categoriesMap.set(catTitle, catObj);
       structuredCategories.push(catObj);
     }
     return categoriesMap.get(catTitle);
   }
 
-  // Fallback category tracker for chapters beyond A and B (etcetera)
+  // Pre-initialize top categories to guarantee exact sorting order
+  getOrCreateCategory("A) Triage");
+  getOrCreateCategory("B) Resuscitation");
+
   let activeAutoCategory = "Other Guidelines";
 
-  outline.forEach((item) => {
+  flatOutline.forEach((item) => {
     const title = item.title.trim();
     const titleLower = title.toLowerCase();
 
-    // 1. Filter out old messy master rows to prevent layout duplication
-    if (titleLower.includes("triage & resuscitation") || titleLower.match(/^b\d+(\.\d+)?\s+resuscitation/i)) {
+    // Strip messy duplicate structural markers and cover sheets safely
+    if (titleLower.includes("triage & resuscitation") || titleLower.match(/^b\d+(\.\d+)?\s+resuscitation/i) || titleLower.includes("cover")) {
       return; 
     }
 
-    // 2. Catch native chapter header rules for subsequent letters (C, D, E...)
-    // Transforms "C Febrile Conditions" into "C) Febrile Conditions" dynamically
+    // Capture upcoming alphabetic manual headers (C, D, E, etcetera...)
     const chapterMatch = title.match(/^([A-Z])[\s\)]+(.+)$/);
     if (chapterMatch && !manualRouter[titleLower]) {
       const letter = chapterMatch[1];
@@ -621,16 +635,13 @@ async function buildOutline() {
       return;
     }
 
-    // 3. Route item into its corresponding container block
+    // Route items accordingly
     if (manualRouter[titleLower]) {
       const route = manualRouter[titleLower];
       const targetCat = getOrCreateCategory(route.cat);
       item.overrideDisplayTitle = route.clean;
       targetCat.items.push(item);
     } else {
-      // Automatic fallback processing for chapters further down the guidelines document
-      if (titleLower.includes("cover")) return; // Skip cover logs
-      
       const targetCat = getOrCreateCategory(activeAutoCategory);
       item.overrideDisplayTitle = title
         .replace(/\s*\(Updated\s+in\s+[^)]+\)/i, '')
@@ -640,67 +651,91 @@ async function buildOutline() {
     }
   });
 
-  // Render the finalized unified clean hierarchy tree down to the sidebar list
+  // Render ONLY the parent layout categories at startup
   structuredCategories.forEach((cat, index) => {
     if (cat.items.length === 0) return;
-    const parentNode = buildTocNode(cat, 0, `cat-${index}`, cat.title, true);
-    list.appendChild(parentNode);
+
+    const wrap = document.createElement('div');
+    wrap.className = 'toc-item depth-0 category-group';
+
+    const row = document.createElement('div');
+    row.className = 'toc-row';
+
+    const caret = document.createElement('span');
+    caret.className = 'caret';
+    caret.textContent = '▸ ';
+    row.appendChild(caret);
+
+    const ttl = document.createElement('span');
+    ttl.className = 'ttl';
+    ttl.textContent = cat.title;
+    row.appendChild(ttl);
+
+    const pg = document.createElement('span');
+    pg.className = 'pg';
+    row.appendChild(pg);
+
+    wrap.appendChild(row);
+
+    const kids = document.createElement('div');
+    kids.className = 'toc-children';
+    kids.style.display = 'none';
+    wrap.appendChild(kids);
+
+    let subItemsRendered = false;
+
+    row.addEventListener('click', () => {
+      const nowOpen = kids.classList.toggle('open');
+      caret.classList.toggle('open', nowOpen);
+      kids.style.display = nowOpen ? 'block' : 'none';
+
+      // LAZY LOADING OVERHEAD PROOF: Sub-item elements are generated ONLY on click
+      if (nowOpen && !subItemsRendered) {
+        cat.items.forEach((child) => {
+          kids.appendChild(createSubItemNode(child, 1));
+        });
+        subItemsRendered = true;
+      }
+    });
+
+    list.appendChild(wrap);
   });
 
   buildRail(outline);
 }
 
-function buildTocNode(item, depth, path, customTitle = null, isTargetCategory = false) {
+// ==========================================================================
+// 2. LAZY SUB-ITEM COMPONENT FACTORY
+// ==========================================================================
+function createSubItemNode(item, depth) {
   const wrap = document.createElement('div');
   wrap.className = `toc-item depth-${depth}`;
-  wrap.dataset.path = path;
-
-  if (depth === 0 && isTargetCategory) {
-    wrap.classList.add('category-group');
-  }
 
   const row = document.createElement('div');
   row.className = 'toc-row';
   row.style.paddingLeft = (10 + depth * 12) + 'px';
 
-  const hasChildren = item.items && item.items.length > 0;
   const caret = document.createElement('span');
   caret.className = 'caret';
-  caret.textContent = hasChildren ? '▸ ' : ''; 
   row.appendChild(caret);
-
-  let displayTitle = customTitle || item.overrideDisplayTitle || item.title.trim();
 
   const ttl = document.createElement('span');
   ttl.className = 'ttl';
-  ttl.textContent = displayTitle;
+  ttl.textContent = item.overrideDisplayTitle || item.title.trim();
   row.appendChild(ttl);
 
   const pg = document.createElement('span');
   pg.className = 'pg';
   row.appendChild(pg);
 
-  row.addEventListener('click', async (e) => {
-    if (hasChildren) {
-      const kids = wrap.querySelector(':scope > .toc-children');
-      if (kids) {
-        const nowOpen = kids.classList.toggle('open');
-        caret.classList.toggle('open', nowOpen);
-        kids.style.display = nowOpen ? 'block' : 'none';
+  wrap.appendChild(row);
 
-        // --- LAZY-LOAD: Resolve child page numbers ONLY when folder expands ---
-        if (nowOpen) {
-          const subItems = kids.querySelectorAll('.toc-item');
-          subItems.forEach(childWrap => {
-            if (childWrap._lazyResolvePage) {
-              childWrap._lazyResolvePage();
-            }
-          });
-        }
-      }
-      if (!item.dest) return;
-    }
-    
+  // Lazy resolution pipeline runs only once the sub-item is visible on screen
+  if (item.dest) {
+    resolveDestPage(item.dest).then(p => { if (p) pg.textContent = p; });
+  }
+
+  row.addEventListener('click', async () => {
     if (item.dest) {
       const pageNum = await resolveDestPage(item.dest);
       if (pageNum) {
@@ -710,71 +745,36 @@ function buildTocNode(item, depth, path, customTitle = null, isTargetCategory = 
     }
   });
 
-  wrap.appendChild(row);
-
-  if (hasChildren) {
-    const kids = document.createElement('div');
-    kids.className = 'toc-children';
-    kids.style.display = 'none';
-    
-    item.items.forEach((child, i) => {
-      kids.appendChild(buildTocNode(child, depth + 1, path + '-' + i));
-    });
-    wrap.appendChild(kids);
-  }
-
-  // --- PERFORMANCE ENGINE: DEFER SUB-ITEM WORK ---
-  if (item.dest) {
-    const runResolution = () => {
-      if (wrap._pageHasResolved) return;
-      wrap._pageHasResolved = true;
-      resolveDestPage(item.dest).then(p => { if (p) pg.textContent = p; });
-    };
-
-    if (depth === 0) {
-      // Top-level headers load immediately (negligible performance impact)
-      runResolution();
-    } else {
-      // Attach the resolution function to the HTML element to be executed later on-click
-      wrap._lazyResolvePage = runResolution;
-    }
-  }
-
   return wrap;
 }
 
-const destCache = new Map();
-async function resolveDestPage(dest) {
-  const key = typeof dest === 'string' ? dest : JSON.stringify(dest);
-  if (destCache.has(key)) return destCache.get(key);
-  try {
-    let explicitDest = dest;
-    if (typeof dest === 'string') explicitDest = await pdfDoc.getDestination(dest);
-    if (!explicitDest) return null;
-    const ref = explicitDest[0];
-    const pageIndex = await pdfDoc.getPageIndex(ref);
-    const pageNum = pageIndex + 1;
-    destCache.set(key, pageNum);
-    return pageNum;
-  } catch (e) {
-    return null;
-  }
-}
-
+// ==========================================================================
+// 3. LAZY RE-LINKED RAIL COORDINATOR
+// ==========================================================================
 function buildRail(outline) {
   const rail = el('rail');
   rail.innerHTML = '';
-  const groups = [];
-  let last = null;
-  outline.forEach((item, i) => {
-    const m = item.title.trim().match(/^([A-Z])\d/);
-    const letter = m ? m[1] : (i === 0 ? '•' : last);
-    if (letter !== last) {
-      groups.push({ letter, index: i });
-      last = letter;
+  const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'];
+  
+  const activeLetters = [];
+  const categoryNodes = document.querySelectorAll('.toc-item.category-group');
+  
+  letters.forEach(letter => {
+    for (let node of categoryNodes) {
+      const text = node.querySelector('.ttl').textContent.trim();
+      if (text.startsWith(letter + ')') || text.startsWith(letter + ' ')) {
+        activeLetters.push({ letter, node });
+        break;
+      }
     }
   });
-  groups.forEach(g => {
+
+  if (activeLetters.length === 0 && categoryNodes.length > 0) {
+    activeLetters.push({ letter: '•', node: categoryNodes[0] });
+  }
+
+  activeLetters.forEach(g => {
+    if (!g.node) return;
     const tab = document.createElement('div');
     tab.className = 'tab';
     tab.textContent = g.letter;
@@ -783,8 +783,7 @@ function buildRail(outline) {
       tab.classList.add('active');
       openSidebarIfMobile();
       switchTab('toc');
-      const node = document.querySelector(`.toc-item[data-path="${g.index}"]`);
-      if (node) node.scrollIntoView({ block: 'start' });
+      g.node.scrollIntoView({ block: 'start', behavior: 'smooth' });
     });
     rail.appendChild(tab);
   });
