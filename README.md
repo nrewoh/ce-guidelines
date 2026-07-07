@@ -1,3 +1,3 @@
-# Clinical Guidelines Hub
+# Clinical Guidelines Full Viewer
 
-Welcome to the clinical guidelines repository. Please use the sidebar on the left to navigate through the sections.
+<iframe src="guidelines.pdf" width="100%" height="85vh" style="border: none;"></iframe>
